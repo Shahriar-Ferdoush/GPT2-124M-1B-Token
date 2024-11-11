@@ -39,7 +39,7 @@ class CausalSelfAttention(nn.Module):
         v = v.view(B, T, self.n_head, self.n_embd // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
 
         # Attention --> Large (T, T) matrix for all the queries and keys
-        att = (q @ k.tranpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
         att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
         att = F.softmax(att, dim=-1)
 
@@ -110,6 +110,29 @@ class GPT(nn.Module):
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
+    def forward(self, idx):
+        # idx --> (B, T)
+        B, T = idx.size()
+        assert T <= self.config.block_size, "Cannot forward, model block size is exhausted"
+        
+        # Token and Position Embeddings
+        pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
+        pos_emb = self.transformer.wpe(pos)
+        tok_emb = self.transformer.wte(idx)
+        
+        x = tok_emb + pos_emb
+        
+        # Transformer Blocks
+        for block in self.transformer.h:
+            x = block(x)
+            
+        # Final Layer Norm
+        x = self.transformer.ln_f(x)
+        logits = self.lm_head(x)
+        
+        return logits
+    
+    
     @classmethod
     def from_pretrained(cls, model_type):
         """Loads pretrained GPT-2 model weights from huggingface"""
@@ -174,5 +197,42 @@ class GPT(nn.Module):
         return model
 
 
+
+
+##################### Usage #####################
+
+num_return_sequences = 5
+max_length = 30
+
 model = GPT.from_pretrained("gpt2")
-print("Did it work?")
+model.eval()
+model.to("cuda")
+
+# prefix token
+import tiktoken
+enc = tiktoken.get_encoding('gpt2')
+tokens = enc.encode("Hello, I'm a language model,")
+tokens = torch.tensor(tokens, dtype=torch.long).unsqueeze(0).repeat(num_return_sequences, 1)
+x = tokens.to("cuda")
+
+# generate
+torch.manual_seed(42)
+torch.cude.manual_seed(42)
+while x.size(1) < max_length:
+    logits = model(x)
+    
+    logits = logits[:, -1, :]
+    
+    probs = F.softmax(logits, dim=-1)
+    
+    topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+    
+    ix = torch.multinomial(topk_probs, num_samples=1)
+    xcol = torch.gather(topk_indices, -1, ix)
+    x = torch.cat((x, xcol), dim=1)
+    
+
+for i in range (num_return_sequences):
+    tokens = x[i, :max_length].tolist()
+    decoded = enc.decode(tokens)
+    print("Generated: ", decoded)
