@@ -1,3 +1,6 @@
+# --------------------------------------------------------------------------------------------
+# ---------------------------------- GPT-2 Model ---------------------------------------------
+
 import math, time, inspect
 from dataclasses import dataclass
 
@@ -255,6 +258,7 @@ class GPT(nn.Module):
 
 
 # ------------------------------------------------------------------------------------------
+# ------------------------------- GPT-2 Tokenized Data Loader ------------------------------
 import tiktoken, os
 import numpy as np
 
@@ -262,53 +266,54 @@ def load_tokens(filename):
     npt = np.load(filename)
     return torch.tensor(npt, dtype=torch.long)
 
+
 class DataLoaderLite:
     def __init__(self, B, T, split):
         self.B = B
         self.T = T
         assert split in {"train", "valid"}
-        
-        data_root = "/file-location"
+
+        data_root = "/kaggle/input/1b-tokenized-fineweb-edu-text-with-gpt-tokenizer/edu-fineweb-GPT-tokenized-1B/"
         shards = os.listdir(data_root)
-        shards = [s for s in shards if split in s]
+
+        # Filter shards to include only .npy files with the correct split
+        shards = [s for s in shards if split in s and s.endswith(".npy")]
         shards = sorted(shards)
         shards = [os.path.join(data_root, s) for s in shards]
         self.shards = shards
-        
+
         assert len(shards) > 0, "No data found"
-        
+
         self.current_shard = 0
         self.tokens = load_tokens(self.shards[self.current_shard])
         self.current_position = self.B * self.T
-    
+
     def next_batch(self):
         B, T = self.B, self.T
         buf = self.tokens[self.current_position : self.current_position + B*T + 1]
-        
+
         x = buf[:-1].view(B, T)
         y = buf[1:].view(B, T)
-        
+
         self.current_position += B*T
-        
-        if self.current_position + B*T + 1 > len(self.tokens):
+
+        if self.current_position + B * T + 1 > len(self.tokens):
             self.current_shard += 1
             self.tokens = load_tokens(self.shards[self.current_shard])
             self.current_position = B*T
-            
+
         return x, y
 
 
-
-
 # ------------------------------------------------------------------------------------------
-# Training
+# --------------------------------- Training GPT-2 Model -----------------------------------
 device = "cpu"
 if torch.cuda.is_available():
     device = "cuda"
 print("Using device:", device)
 
 
-total_batch_size = 524288
+total_batch_size = 131072
 B = 2
 T = 1024
 assert total_batch_size % (B*T) == 0, "Batch size not divisible by B*T"
@@ -358,7 +363,7 @@ for step in range(10):
     # Current time
     t0 = time.time()
     optimizer.zero_grad()
-    
+
     loss_accum = 0.0
     for micro_step in range(grad_acc_steps):
         x, y = train_loader.next_batch()
@@ -368,21 +373,21 @@ for step in range(10):
         loss = loss / grad_acc_steps
         loss_accum += loss.detach()
         loss.backward()
-    
+
     # Gradient clipping
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-    
+
     # Learning rate for this iteration
     lr = get_lr(step)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
-    
+
     # Update weights
     optimizer.step()
-    
+
     # Let GPU finish
     torch.cuda.synchronize()
-    
+
     # Current time
     t1 = time.time()
     dt = (t1 - t0)  # in seconds
@@ -394,3 +399,9 @@ for step in range(10):
     print(f"Step {step}| Loss: {loss_accum.item():.6f} | Norm: {norm:.3f} | LR: {lr:.3e} | Throughput: {tokens_per_sec:.2f} tokens/sec")
 
 
+# ------------------------------------------------------------------------------------------
+# -------------------------- Save and Load GPT-2 Model Weights -----------------------------
+# Model name : GPT2-124M-1B-token
+
+# Save the model
+torch.save(model.state_dict(), "GPT2-124M-1B-token.pth")
