@@ -255,25 +255,31 @@ class GPT(nn.Module):
 
 
 # ------------------------------------------------------------------------------------------
-import tiktoken
+import tiktoken, os
+import numpy as np
+
+def load_tokens(filename):
+    npt = np.load(filename)
+    return torch.tensor(npt, dtype=torch.long)
 
 class DataLoaderLite:
-    def __init__(self, B, T):
+    def __init__(self, B, T, split):
         self.B = B
         self.T = T
+        assert split in {"train", "valid"}
         
-        with open("input.txt", "r") as f:
-            text = f.read()
+        data_root = "/file-location"
+        shards = os.listdir(data_root)
+        shards = [s for s in shards if split in s]
+        shards = sorted(shards)
+        shards = [os.path.join(data_root, s) for s in shards]
+        self.shards = shards
         
-        enc = tiktoken.get_encoding('gpt2')
-        tokens = enc.encode(text)
-        self.tokens = torch.tensor(tokens)
+        assert len(shards) > 0, "No data found"
         
-        print("Total tokens:", len(self.tokens))
-        print("Total batches:", len(self.tokens) // (B*T))
-        
-        # State
-        self.current_position = 0
+        self.current_shard = 0
+        self.tokens = load_tokens(self.shards[self.current_shard])
+        self.current_position = self.B * self.T
     
     def next_batch(self):
         B, T = self.B, self.T
@@ -285,7 +291,9 @@ class DataLoaderLite:
         self.current_position += B*T
         
         if self.current_position + B*T + 1 > len(self.tokens):
-            self.current_position = 0
+            self.current_shard += 1
+            self.tokens = load_tokens(self.shards[self.current_shard])
+            self.current_position = B*T
             
         return x, y
 
@@ -294,9 +302,6 @@ class DataLoaderLite:
 
 # ------------------------------------------------------------------------------------------
 # Training
-num_return_sequences = 5
-max_length = 30
-
 device = "cpu"
 if torch.cuda.is_available():
     device = "cuda"
@@ -313,7 +318,7 @@ print("No of Gradient Accumulation Steps:", grad_acc_steps)
 
 
 # Data Loader
-train_loader = DataLoaderLite(B, T)
+train_loader = DataLoaderLite(B, T, split="train")
 
 # Set Torch to lower precision (TF32)
 torch.set_float32_matmul_precision('high')
@@ -326,8 +331,8 @@ model = torch.compile(model)
 
 max_lr = 6e-4
 min_lr = max_lr * 0.1
-warmup_steps = 10
-max_steps = 50
+warmup_steps = 100
+max_steps = 1900
 
 def get_lr(it):
     # Linear warmup for the first warmup_steps
@@ -358,7 +363,7 @@ for step in range(10):
     for micro_step in range(grad_acc_steps):
         x, y = train_loader.next_batch()
         x, y = x.to(device), y.to(device)
-        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        with torch.autocast(device_type=device, dtype=torch.float16):
             logits, loss = model(x, y)
         loss = loss / grad_acc_steps
         loss_accum += loss.detach()
@@ -389,67 +394,3 @@ for step in range(10):
     print(f"Step {step}| Loss: {loss_accum.item():.6f} | Norm: {norm:.3f} | LR: {lr:.3e} | Throughput: {tokens_per_sec:.2f} tokens/sec")
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-import sys; sys.exit(0)
-model.eval()
-model.to(device)
-
-# prefix token
-import tiktoken
-enc = tiktoken.get_encoding('gpt2')
-tokens = enc.encode("Hello, I'm a language model,")
-tokens = torch.tensor(tokens, dtype=torch.long).unsqueeze(0).repeat(num_return_sequences, 1)
-x = tokens.to(device)
-
-# generate
-torch.manual_seed(42)
-torch.cuda.manual_seed(42)
-while x.size(1) < max_length:
-    logits = model(x)
-    logits = logits[:, -1, :]
-    
-    probs = F.softmax(logits, dim=-1)
-    
-    topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
-    
-    ix = torch.multinomial(topk_probs, num_samples=1)
-    xcol = torch.gather(topk_indices, -1, ix)
-    x = torch.cat((x, xcol), dim=1)
-    
-
-for i in range (num_return_sequences):
-    tokens = x[i, :max_length].tolist()
-    decoded = enc.decode(tokens)
-    print("Generated: ", decoded)
