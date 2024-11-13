@@ -386,8 +386,8 @@ for step in range(3):
 
 # Save the model
 if master_process:
+    torch.save(model, "GPT2-124M-1B-token-model.pth")
     torch.save(model.state_dict(), "GPT2-124M-1B-token.pth")
-
 if ddp:
     destroy_process_group()
 
