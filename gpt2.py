@@ -330,7 +330,7 @@ def get_lr(it):
 # Optimizer
 optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
 
-for step in range(3):
+for step in range(max_steps):
     # Current time
     t0 = time.time()
     optimizer.zero_grad()
@@ -375,7 +375,7 @@ for step in range(3):
     tokens_per_sec = token_processed / dt
 
     if master_process:
-        if step % 50 == 0 or step == max_steps - 1:
+        if step % 25 == 0 or step == max_steps - 1:
             print(f"Step {step}| Loss: {loss_accum.item():.6f} | Norm: {norm:.3f} | LR: {lr:.3e} | Throughput: {tokens_per_sec:.2f} tokens/sec")
 
         with open("training.log", "a") as f:
