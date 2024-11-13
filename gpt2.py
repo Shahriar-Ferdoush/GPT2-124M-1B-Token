@@ -164,70 +164,7 @@ class GPT(nn.Module):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))  # (B*T, vocab_size)
         
         return logits, loss
-    
-    
-    @classmethod
-    def from_pretrained(cls, model_type):
-        """Loads pretrained GPT-2 model weights from huggingface"""
-        assert model_type in {"gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl"}
-        from transformers import GPT2LMHeadModel
 
-        print("loading weights from pretrained gpt: %s" % model_type)
-
-        # n_layer, n_head and n_embd are determined from model_type
-        config_args = {
-            "gpt2": dict(n_layer=12, n_head=12, n_embd=768),  # 124M params
-            "gpt2-medium": dict(n_layer=24, n_head=16, n_embd=1024),  # 350M params
-            "gpt2-large": dict(n_layer=36, n_head=20, n_embd=1280),  # 774M params
-            "gpt2-xl": dict(n_layer=48, n_head=25, n_embd=1600),  # 1558M params
-        }[model_type]
-        config_args["vocab_size"] = 50257  # always 50257 for GPT model checkpoints
-        config_args["block_size"] = 1024  # always 1024 for GPT model checkpoints
-        # create a from-scratch initialized minGPT model
-        config = GPTConfig(**config_args)
-        model = GPT(config)
-        sd = model.state_dict()
-        sd_keys = sd.keys()
-        sd_keys = [
-            k for k in sd_keys if not k.endswith(".attn.bias")
-        ]  # discard this mask / buffer, not a param
-
-        # init a HuggingFace/Transformers model
-        model_hf = GPT2LMHeadModel.from_pretrained(model_type)
-        sd_hf = model_hf.state_dict()
-
-        # copy while ensuring all of the parameters are aligned and match in names and shapes
-        sd_keys_hf = sd_hf.keys()
-        sd_keys_hf = [
-            k for k in sd_keys_hf if not k.endswith(".attn.masked_bias")
-        ]  # ignore these, just a buffer
-        sd_keys_hf = [
-            k for k in sd_keys_hf if not k.endswith(".attn.bias")
-        ]  # same, just the mask (buffer)
-        transposed = [
-            "attn.c_attn.weight",
-            "attn.c_proj.weight",
-            "mlp.c_fc.weight",
-            "mlp.c_proj.weight",
-        ]
-        # basically the OpenAI checkpoints use a "Conv1D" module, but we only want to use a vanilla Linear
-        # this means that we have to transpose these weights when we import them
-        assert len(sd_keys_hf) == len(
-            sd_keys
-        ), f"mismatched keys: {len(sd_keys_hf)} != {len(sd_keys)}"
-        for k in sd_keys_hf:
-            if any(k.endswith(w) for w in transposed):
-                # special treatment for the Conv1D weights we need to transpose
-                assert sd_hf[k].shape[::-1] == sd[k].shape
-                with torch.no_grad():
-                    sd[k].copy_(sd_hf[k].t())
-            else:
-                # vanilla copy over the other parameters
-                assert sd_hf[k].shape == sd[k].shape
-                with torch.no_grad():
-                    sd[k].copy_(sd_hf[k])
-
-        return model
     
     def configure_optimizers(self, weight_decay, learning_rate, device):
         param_dict = {pn: p for pn, p in self.named_parameters()}
@@ -268,9 +205,12 @@ def load_tokens(filename):
 
 
 class DataLoaderLite:
-    def __init__(self, B, T, split):
+    def __init__(self, B, T, process_rank, num_processes, split="train"):
         self.B = B
         self.T = T
+        self.process_rank = process_rank
+        self.num_processes = num_processes
+        
         assert split in {"train", "valid"}
 
         data_root = "/kaggle/input/1b-tokenized-fineweb-edu-text-with-gpt-tokenizer/edu-fineweb-GPT-tokenized-1B/"
@@ -286,7 +226,7 @@ class DataLoaderLite:
 
         self.current_shard = 0
         self.tokens = load_tokens(self.shards[self.current_shard])
-        self.current_position = self.B * self.T
+        self.current_position = self.B * self.T * self.process_rank
 
     def next_batch(self):
         B, T = self.B, self.T
@@ -295,44 +235,74 @@ class DataLoaderLite:
         x = buf[:-1].view(B, T)
         y = buf[1:].view(B, T)
 
-        self.current_position += B*T
+        self.current_position += B * T * self.num_processes
 
-        if self.current_position + B * T + 1 > len(self.tokens):
+        if self.current_position + B * T * self.num_processes + 1 > len(self.tokens):
             self.current_shard += 1
             self.tokens = load_tokens(self.shards[self.current_shard])
-            self.current_position = B*T
+            self.current_position = B * T * self.process_rank
 
         return x, y
 
 
 # ------------------------------------------------------------------------------------------
 # --------------------------------- Training GPT-2 Model -----------------------------------
-device = "cpu"
-if torch.cuda.is_available():
-    device = "cuda"
-print("Using device:", device)
+
+from torch.distributed import init_process_group, destroy_process_group
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
+
+ddp = int(os.environ.get('RANK', -1)) != -1
+if ddp:
+    assert torch.cuda.is_available(), "Distributed training requires CUDA"
+    init_process_group(backend='nccl')
+    ddp_rank = int(os.environ['RANK'])
+    ddp_local_rank = int(os.environ['LOCAL_RANK'])
+    ddp_world_size = int(os.environ['WORLD_SIZE'])
+    device = f"cuda:{ddp_local_rank}"
+    
+    torch.cuda.set_device(device)
+    master_process = ddp_rank == 0
+else:
+    # Non DDP Run
+    ddp_rank = 0
+    ddp_local_rank = 0
+    ddp_world_size = 1
+    master_process = True
+    
+    # Auto detect device
+    device = "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    print("Using device:", device)
 
 
 total_batch_size = 524288
 B = 8
 T = 1024
-assert total_batch_size % (B*T) == 0, "Batch size not divisible by B*T"
-grad_acc_steps = total_batch_size // (B*T)
-print("Total Batch Size:", total_batch_size)
-print("No of Gradient Accumulation Steps:", grad_acc_steps)
+assert total_batch_size % (B * T * ddp_world_size) == 0, "Batch size not divisible by B * T * ddp_world_size"
+grad_acc_steps = total_batch_size // (B * T * ddp_world_size)
+
+if master_process:
+    print("Total Batch Size:", total_batch_size)
+    print("No of Gradient Accumulation Steps:", grad_acc_steps)
 
 
 # Data Loader
-train_loader = DataLoaderLite(B, T, split="train")
+train_loader = DataLoaderLite(B, T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train")
 
 # Set Torch to lower precision (TF32)
 # torch.set_float32_matmul_precision('high')
 
-# Get logits and loss
+# Create Mode
 model = GPT(GPTConfig(vocab_size=50304))
 model.to(device)
 # model = torch.compile(model)
 
+# Multi-GPU
+if ddp:
+    model = DDP(model, device_ids=[ddp_local_rank])
+raw_model = model.module if ddp else model
 
 max_lr = 6e-4
 min_lr = max_lr * 0.1
@@ -357,7 +327,7 @@ def get_lr(it):
 
 
 # Optimizer
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
+optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
 
 for step in range(3):
     # Current time
@@ -372,7 +342,14 @@ for step in range(3):
             logits, loss = model(x, y)
         loss = loss / grad_acc_steps
         loss_accum += loss.detach()
+        
+        if ddp:
+            model.require_backward_grad_sync = (micro_step == grad_acc_steps - 1)
+        
         loss.backward()
+    
+    if ddp:
+        dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
 
     # Gradient clipping
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -393,10 +370,11 @@ for step in range(3):
     dt = (t1 - t0)  # in seconds
 
     # Tokens per second throughput
-    token_processed = train_loader.B * train_loader.T * grad_acc_steps
+    token_processed = train_loader.B * train_loader.T * grad_acc_steps * ddp_world_size
     tokens_per_sec = token_processed / dt
 
-    print(f"Step {step}| Loss: {loss_accum.item():.6f} | Norm: {norm:.3f} | LR: {lr:.3e} | Throughput: {tokens_per_sec:.2f} tokens/sec")
+    if master_process:
+        print(f"Step {step}| Loss: {loss_accum.item():.6f} | Norm: {norm:.3f} | LR: {lr:.3e} | Throughput: {tokens_per_sec:.2f} tokens/sec")
 
 
 # ------------------------------------------------------------------------------------------
@@ -404,4 +382,8 @@ for step in range(3):
 # Model name : GPT2-124M-1B-token
 
 # Save the model
-torch.save(model.state_dict(), "GPT2-124M-1B-token.pth")
+if master_process:
+    torch.save(model.state_dict(), "GPT2-124M-1B-token.pth")
+
+if ddp:
+    destroy_process_group()
