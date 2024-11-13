@@ -239,7 +239,7 @@ class DataLoaderLite:
         self.current_position += B * T * self.num_processes
 
         if self.current_position + B * T * self.num_processes + 1 > len(self.tokens):
-            self.current_shard += 1
+            self.current_shard = (self.current_shard + 1) % len(self.shards)
             self.tokens = load_tokens(self.shards[self.current_shard])
             self.current_position = B * T * self.process_rank
 
