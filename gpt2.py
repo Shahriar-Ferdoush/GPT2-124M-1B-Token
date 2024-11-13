@@ -278,7 +278,7 @@ else:
     print("Using device:", device)
 
 
-total_batch_size = 32768
+total_batch_size = 524288
 B = 8
 T = 1024
 assert total_batch_size % (B * T * ddp_world_size) == 0, "Batch size not divisible by B * T * ddp_world_size"
@@ -386,7 +386,6 @@ for step in range(3):
 
 # Save the model
 if master_process:
-    torch.save(model, "GPT2-124M-1B-token-model.pth")
     torch.save(model.state_dict(), "GPT2-124M-1B-token.pth")
 if ddp:
     destroy_process_group()
@@ -444,7 +443,12 @@ while x_gen.size(1) < max_length:
     xcol = torch.gather(topk_indices, -1, ix)
     x_gen = torch.cat((x_gen, xcol), dim=1)
 
+print("\n"*5)
+print("="*50)
+
 for i in range(num_return_sequences):
     tokens = x_gen[i, :max_length].tolist()
     decoded = enc.decode(tokens)
-    print(f"Generated Text {i+1}: {decoded}")
+    print(f"Generated Text {i+1}: {decoded} \n")
+
+print("-"*50)
