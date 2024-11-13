@@ -261,7 +261,7 @@ if ddp:
     ddp_local_rank = int(os.environ['LOCAL_RANK'])
     ddp_world_size = int(os.environ['WORLD_SIZE'])
     device = f"cuda:{ddp_local_rank}"
-    
+
     torch.cuda.set_device(device)
     master_process = ddp_rank == 0
 else:
@@ -270,7 +270,7 @@ else:
     ddp_local_rank = 0
     ddp_world_size = 1
     master_process = True
-    
+
     # Auto detect device
     device = "cpu"
     if torch.cuda.is_available():
@@ -278,7 +278,7 @@ else:
     print("Using device:", device)
 
 
-total_batch_size = 524288
+total_batch_size = 32768
 B = 8
 T = 1024
 assert total_batch_size % (B * T * ddp_world_size) == 0, "Batch size not divisible by B * T * ddp_world_size"
@@ -392,3 +392,59 @@ if ddp:
     destroy_process_group()
 
 
+# ------------------------------------------------------------------------------------------
+# -------------------------- Visualize Loss and Throughput --------------------------------
+import matplotlib.pyplot as plt
+
+data = np.loadtxt("training.log", delimiter=",")
+steps = data[:, 0]
+losses = data[:, 1]
+
+fig, ax1 = plt.subplots()
+
+color = 'tab:red'
+ax1.set_xlabel('Step')
+ax1.set_ylabel('Loss', color=color)
+ax1.plot(steps, losses, color=color)
+ax1.tick_params(axis='y', labelcolor=color)
+
+fig.tight_layout()  
+plt.show()
+
+
+# ------------------------------------------------------------------------------------------
+# ---------------------- Load and Generate Text from GPT-2 Model ---------------------------
+# Model name : GPT2-124M-1B-token
+import tiktoken
+
+# Load the model
+pretrained_model = GPT(GPTConfig(vocab_size=50304))
+pretrained_model.load_state_dict(torch.load("GPT2-124M-1B-token.pth"))
+pretrained_model.to(device)
+
+
+# Generate Text
+num_return_sequences = 5
+max_length = 32
+
+enc = tiktoken.get_encoding("gpt2")
+
+tokens = enc.encode("I was thinking about the meaning of life and")
+tokens = torch.tensor(tokens, dtype=torch.long)
+tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
+
+x_gen = tokens.to(device)
+
+while x_gen.size(1) < max_length:
+    logits, _ = pretrained_model(x_gen)
+    logits = logits[:, -1, :]
+    probs = torch.softmax(logits, dim=-1)
+    topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+    ix = torch.multinomial(topk_probs, num_samples=1)
+    xcol = torch.gather(topk_indices, -1, ix)
+    x_gen = torch.cat((x_gen, xcol), dim=1)
+
+for i in range(num_return_sequences):
+    tokens = x_gen[i, :max_length].tolist()
+    decoded = enc.decode(tokens)
+    print(f"Generated Text {i+1}: {decoded}")
