@@ -419,7 +419,7 @@ import tiktoken
 
 # Load the model
 pretrained_model = GPT(GPTConfig(vocab_size=50304))
-pretrained_model.load_state_dict(torch.load("GPT2-124M-1B-token.pth"))
+pretrained_model.load_state_dict(torch.load("GPT2-124M-1B-token.pth"), strict=False)
 pretrained_model.to(device)
 
 
