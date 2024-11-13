@@ -196,7 +196,7 @@ class GPT(nn.Module):
 
 # ------------------------------------------------------------------------------------------
 # ------------------------------- GPT-2 Tokenized Data Loader ------------------------------
-import tiktoken, os
+import os
 import numpy as np
 
 def load_tokens(filename):
