@@ -386,6 +386,10 @@ for step in range(max_steps):
 # -------------------------- Save and Load GPT-2 Model Weights -----------------------------
 # Model name : GPT2-124M-1B-token
 
+# Wait for all processes to finish
+if ddp:
+    dist.barrier()
+
 # Save the model
 if master_process:
     torch.save(model.state_dict(), "GPT2-124M-1B-token.pth")
