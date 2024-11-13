@@ -330,7 +330,7 @@ def get_lr(it):
 # Optimizer
 optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
 
-for step in range(20):
+for step in range(3):
     # Current time
     t0 = time.time()
     optimizer.zero_grad()
@@ -343,12 +343,12 @@ for step in range(20):
             logits, loss = model(x, y)
         loss = loss / grad_acc_steps
         loss_accum += loss.detach()
-        
+
         if ddp:
             model.require_backward_grad_sync = (micro_step == grad_acc_steps - 1)
-        
+
         loss.backward()
-    
+
     if ddp:
         dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
 
@@ -375,7 +375,9 @@ for step in range(20):
     tokens_per_sec = token_processed / dt
 
     if master_process:
-        print(f"Step {step}| Loss: {loss_accum.item():.6f} | Norm: {norm:.3f} | LR: {lr:.3e} | Throughput: {tokens_per_sec:.2f} tokens/sec")
+        if step % 50 == 0 or step == max_steps - 1:
+            print(f"Step {step}| Loss: {loss_accum.item():.6f} | Norm: {norm:.3f} | LR: {lr:.3e} | Throughput: {tokens_per_sec:.2f} tokens/sec")
+
         with open("training.log", "a") as f:
             f.write(f"{step},{loss_accum.item()},{norm},{lr},{tokens_per_sec}\n")
 
@@ -392,63 +394,45 @@ if ddp:
 
 
 # ------------------------------------------------------------------------------------------
-# -------------------------- Visualize Loss and Throughput --------------------------------
-import matplotlib.pyplot as plt
-
-data = np.loadtxt("training.log", delimiter=",")
-steps = data[:, 0]
-losses = data[:, 1]
-
-fig, ax1 = plt.subplots()
-
-color = 'tab:red'
-ax1.set_xlabel('Step')
-ax1.set_ylabel('Loss', color=color)
-ax1.plot(steps, losses, color=color)
-ax1.tick_params(axis='y', labelcolor=color)
-
-fig.tight_layout()  
-plt.show()
-
-
-# ------------------------------------------------------------------------------------------
 # ---------------------- Load and Generate Text from GPT-2 Model ---------------------------
 # Model name : GPT2-124M-1B-token
 import tiktoken
 
-# Load the model
-pretrained_model = GPT(GPTConfig(vocab_size=50304))
-pretrained_model.load_state_dict(torch.load("GPT2-124M-1B-token.pth"), strict=False)
-pretrained_model.to(device)
+
+if master_process:
+    # Load the model
+    pretrained_model = GPT(GPTConfig(vocab_size=50304))
+    pretrained_model.load_state_dict(torch.load("GPT2-124M-1B-token.pth"), strict=False)
+    pretrained_model.to(device)
 
 
-# Generate Text
-num_return_sequences = 5
-max_length = 32
+    # Generate Text
+    num_return_sequences = 5
+    max_length = 32
 
-enc = tiktoken.get_encoding("gpt2")
+    enc = tiktoken.get_encoding("gpt2")
 
-tokens = enc.encode("I was thinking about the meaning of life and")
-tokens = torch.tensor(tokens, dtype=torch.long)
-tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
+    tokens = enc.encode("I was thinking about the meaning of life and")
+    tokens = torch.tensor(tokens, dtype=torch.long)
+    tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
 
-x_gen = tokens.to(device)
+    x_gen = tokens.to(device)
 
-while x_gen.size(1) < max_length:
-    logits, _ = pretrained_model(x_gen)
-    logits = logits[:, -1, :]
-    probs = torch.softmax(logits, dim=-1)
-    topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
-    ix = torch.multinomial(topk_probs, num_samples=1)
-    xcol = torch.gather(topk_indices, -1, ix)
-    x_gen = torch.cat((x_gen, xcol), dim=1)
+    while x_gen.size(1) < max_length:
+        logits, _ = pretrained_model(x_gen)
+        logits = logits[:, -1, :]
+        probs = torch.softmax(logits, dim=-1)
+        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+        ix = torch.multinomial(topk_probs, num_samples=1)
+        xcol = torch.gather(topk_indices, -1, ix)
+        x_gen = torch.cat((x_gen, xcol), dim=1)
 
-print("\n"*5)
-print("="*50)
+    print("\n"*5)
+    print("="*50)
 
-for i in range(num_return_sequences):
-    tokens = x_gen[i, :max_length].tolist()
-    decoded = enc.decode(tokens)
-    print(f"Generated Text {i+1}: {decoded} \n")
+    for i in range(num_return_sequences):
+        tokens = x_gen[i, :max_length].tolist()
+        decoded = enc.decode(tokens)
+        print(f"Generated Text {i+1}: {decoded} \n")
 
-print("-"*50)
+    print("-"*50)
