@@ -313,8 +313,8 @@ if torch.cuda.is_available():
 print("Using device:", device)
 
 
-total_batch_size = 131072
-B = 2
+total_batch_size = 524288
+B = 8
 T = 1024
 assert total_batch_size % (B*T) == 0, "Batch size not divisible by B*T"
 grad_acc_steps = total_batch_size // (B*T)
@@ -326,12 +326,12 @@ print("No of Gradient Accumulation Steps:", grad_acc_steps)
 train_loader = DataLoaderLite(B, T, split="train")
 
 # Set Torch to lower precision (TF32)
-torch.set_float32_matmul_precision('high')
+# torch.set_float32_matmul_precision('high')
 
 # Get logits and loss
 model = GPT(GPTConfig(vocab_size=50304))
 model.to(device)
-model = torch.compile(model)
+# model = torch.compile(model)
 
 
 max_lr = 6e-4
@@ -359,7 +359,7 @@ def get_lr(it):
 # Optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
 
-for step in range(10):
+for step in range(3):
     # Current time
     t0 = time.time()
     optimizer.zero_grad()
@@ -368,7 +368,7 @@ for step in range(10):
     for micro_step in range(grad_acc_steps):
         x, y = train_loader.next_batch()
         x, y = x.to(device), y.to(device)
-        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        with torch.autocast(device_type=device, dtype=torch.float16):
             logits, loss = model(x, y)
         loss = loss / grad_acc_steps
         loss_accum += loss.detach()
@@ -391,11 +391,11 @@ for step in range(10):
     # Current time
     t1 = time.time()
     dt = (t1 - t0)  # in seconds
-    
+
     # Tokens per second throughput
     token_processed = train_loader.B * train_loader.T * grad_acc_steps
     tokens_per_sec = token_processed / dt
-    
+
     print(f"Step {step}| Loss: {loss_accum.item():.6f} | Norm: {norm:.3f} | LR: {lr:.3e} | Throughput: {tokens_per_sec:.2f} tokens/sec")
 
 
