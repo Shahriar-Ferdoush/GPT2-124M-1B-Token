@@ -387,6 +387,7 @@ for step in range(max_steps):
             print(f"Step {step}| Loss: {loss_accum:.6f} | Norm: {norm:.3f} | LR: {lr:.3e} | Throughput: {tokens_per_sec:.2f} tokens/sec")
 
         with open("training.log", "a") as f:
+            pass
             # f.write(f"{step},{loss_accum.item()},{norm},{lr},{tokens_per_sec}\n")
 
 
