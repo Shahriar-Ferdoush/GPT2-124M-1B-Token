@@ -220,7 +220,9 @@ class DataLoaderLite:
         shards = os.listdir(data_root)
 
         # Filter shards to include only .npy files with the correct split
-        shards = [s for s in shards if split in s]
+        if split == "val":
+            shards = [s for s in shards if "val" in s]
+            
         shards = sorted(shards)
         shards = [os.path.join(data_root, s) for s in shards]
         self.shards = shards
