@@ -356,7 +356,8 @@ for step in range(max_steps):
         # loss.backward()
 
     if ddp:
-        dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
+        pass
+        # dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
 
     # Gradient clipping
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
