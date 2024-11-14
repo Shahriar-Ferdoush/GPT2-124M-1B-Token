@@ -213,10 +213,10 @@ class DataLoaderLite:
         self.T = T
         self.process_rank = process_rank
         self.num_processes = num_processes
-        
+
         assert split in {"train", "valid"}
 
-        data_root = "/kaggle/input/1b-tokenized-fineweb-edu-text-with-gpt-tokenizer/edu-fineweb-GPT-tokenized-1B/"
+        data_root = "/kaggle/input/1b-tokenized-fineweb-edu-text-with-gpt-tokenizer/fineweb-GPT-tokenized-1B/"
         shards = os.listdir(data_root)
 
         # Filter shards to include only .npy files with the correct split
@@ -227,7 +227,7 @@ class DataLoaderLite:
 
         assert len(shards) > 0, "No data found"
         self.reset()
-        
+
     def reset(self):
         self.current_shard = 0
         self.tokens = load_tokens(self.shards[self.current_shard])
@@ -236,18 +236,17 @@ class DataLoaderLite:
     def next_batch(self):
         B, T = self.B, self.T
         buf = self.tokens[self.current_position : self.current_position + B * T + 1]
-        
+
         # Handling in case of last shard with insufficient tokens
         # Pad with zeros
         if len(buf) < B * T + 1:
             buf = torch.cat((buf, torch.zeros(B * T + 1 - len(buf), dtype=torch.long)))
-            
 
         x = (buf[:-1]).view(B, T)
         y = (buf[1:]).view(B, T)
-        
+
         self.current_position += B * T * self.num_processes
-        
+
         if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
             self.current_shard = (self.current_shard + 1) % len(self.shards)
             print(f"Switching to shard {self.current_shard}")
