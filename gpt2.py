@@ -210,14 +210,14 @@ class DataLoaderLite:
 
         assert split in {"train", "val"}
 
-        data_root = "/kaggle/input/1b-tokenized-fineweb-edu-text-with-gpt-tokenizer/fineweb-GPT-tokenized-1B/"
+        data_root = "/kaggle/input/fineweb-GPT-tokenized-1B/"
         shards = os.listdir(data_root)
 
         # Filter shards to include only .npy files with the correct split
         # All files for train split, for val split only files with "val" in the name
         if split == "val":
             shards = [s for s in shards if "val" in s]
-        
+
         shards = sorted(shards)
         shards = [os.path.join(data_root, s) for s in shards]
         self.shards = shards
