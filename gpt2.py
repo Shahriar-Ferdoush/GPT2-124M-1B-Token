@@ -53,9 +53,7 @@ class CausalSelfAttention(nn.Module):
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         
         
-        y = (
-            y.transpose(1, 2).contiguous().view(B, T, C)
-        )  # re-assemble all head outputs side by side
+        y = (y.transpose(1, 2).contiguous().view(B, T, C)) # re-assemble all head outputs side by side
 
         # Output projection
         y = self.c_proj(y)
@@ -89,9 +87,7 @@ class Block(nn.Module):
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))  # Communication
-        x = x + self.mlp(
-            self.ln_2(x)
-        )  # Map - Think individually over what is communicated
+        x = x + self.mlp(self.ln_2(x))   # Map - Think individually over what is communicated
         return x
 
 
@@ -112,10 +108,10 @@ class GPT(nn.Module):
 
         self.transformer = nn.ModuleDict(
             dict(
-                wte=nn.Embedding(config.vocab_size, config.n_embd),
-                wpe=nn.Embedding(config.block_size, config.n_embd),
-                h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-                ln_f=nn.LayerNorm(config.n_embd),
+                wte = nn.Embedding(config.vocab_size, config.n_embd),
+                wpe = nn.Embedding(config.block_size, config.n_embd),
+                h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+                ln_f = nn.LayerNorm(config.n_embd),
             )
         )
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -127,7 +123,7 @@ class GPT(nn.Module):
         self.apply(self._init_weights)
     
     def _init_weights(self, module):
-        if isinstance(module, (nn.Linear)):
+        if isinstance(module, nn.Linear):
             std = 0.02
             if hasattr(module, "GPT_RESIDUAL_SCALE_INIT"):
                 std *= (2 * self.config.n_layer) ** -0.5
@@ -135,7 +131,7 @@ class GPT(nn.Module):
             if module.bias is not None:
                 module.bias.data.zero_()
         elif isinstance(module, nn.Embedding):
-            module.weight.data.normal_(mean=0.0, std=0.02)
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
         # LayerNorm sclae is already set to 1 and offset to 0
         
         
@@ -188,10 +184,10 @@ class GPT(nn.Module):
 
         
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available and 'cuda' in device
+        use_fused = fused_available and device == "cuda"
         print(f"Using fused adamw: {use_fused}")
         
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8)
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused)
         return optimizer
 
 
@@ -218,7 +214,7 @@ class DataLoaderLite:
         shards = os.listdir(data_root)
 
         # Filter shards to include only .npy files with the correct split
-        shards = [s for s in shards if split in s and s.endswith(".npy")]
+        shards = [s for s in shards if split in s]
         shards = sorted(shards)
         shards = [os.path.join(data_root, s) for s in shards]
         self.shards = shards
@@ -232,19 +228,22 @@ class DataLoaderLite:
     def next_batch(self):
         B, T = self.B, self.T
         buf = self.tokens[self.current_position : self.current_position + B * T + 1]
-
-        # Check if we have enough tokens
+        
+        # Handling in case of last shard with insufficient tokens
+        # Pad with zeros
         if len(buf) < B * T + 1:
-            # Move to the next shard if insufficient tokens
+            buf = torch.cat((buf, torch.zeros(B * T + 1 - len(buf), dtype=torch.long)))
+            
+
+        x = (buf[:-1]).view(B, T)
+        y = (buf[1:]).view(B, T)
+        
+        self.current_position += B * T * self.num_processes
+        
+        if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
             self.current_shard = (self.current_shard + 1) % len(self.shards)
             self.tokens = load_tokens(self.shards[self.current_shard])
             self.current_position = B * T * self.process_rank
-            buf = self.tokens[self.current_position : self.current_position + B * T + 1]
-
-        # Perform reshaping
-        x = buf[:-1].view(B, T)
-        y = buf[1:].view(B, T)
-        self.current_position += B * T * self.num_processes
 
         return x, y
 
@@ -295,6 +294,9 @@ if master_process:
 # Data Loader
 train_loader = DataLoaderLite(B, T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train")
 
+# Gradient Scaler
+# scaler = torch.cuda.amp.GradScaler()
+
 # Set Torch to lower precision (TF32)
 # torch.set_float32_matmul_precision('high')
 
@@ -311,7 +313,7 @@ raw_model = model.module if ddp else model
 max_lr = 6e-4
 min_lr = max_lr * 0.1
 warmup_steps = 100
-max_steps = 1900
+max_steps = 1907
 
 def get_lr(it):
     # Linear warmup for the first warmup_steps
@@ -342,13 +344,14 @@ for step in range(max_steps):
     for micro_step in range(grad_acc_steps):
         x, y = train_loader.next_batch()
         x, y = x.to(device), y.to(device)
+
+        if ddp:
+            model.require_backward_grad_sync = (micro_step == grad_acc_steps - 1)
+            
         with torch.autocast(device_type=device, dtype=torch.float16):
             logits, loss = model(x, y)
         loss = loss / grad_acc_steps
         loss_accum += loss.detach()
-
-        if ddp:
-            model.require_backward_grad_sync = (micro_step == grad_acc_steps - 1)
 
         loss.backward()
 
@@ -367,7 +370,8 @@ for step in range(max_steps):
     optimizer.step()
 
     # Let GPU finish
-    torch.cuda.synchronize()
+    if device == "cuda":
+        torch.cuda.synchronize()
 
     # Current time
     t1 = time.time()
