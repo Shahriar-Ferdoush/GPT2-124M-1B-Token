@@ -200,6 +200,10 @@ def load_tokens(filename):
     npt = np.load(filename)
     npt = npt.astype(np.int32) 
     ptt = torch.tensor(npt, dtype=torch.long)
+    
+    # Print num of tokens
+    print(f"Loaded {len(ptt)} tokens from {filename}")
+    
     return ptt
 
 
@@ -240,6 +244,7 @@ class DataLoaderLite:
         
         if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
             self.current_shard = (self.current_shard + 1) % len(self.shards)
+            print(f"Switching to shard {self.current_shard}")
             self.tokens = load_tokens(self.shards[self.current_shard])
             self.current_position = B * T * self.process_rank
 
