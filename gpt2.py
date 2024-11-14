@@ -384,10 +384,10 @@ for step in range(max_steps):
 
     if master_process:
         if step % 10 == 0 or step == max_steps - 1:
-            print(f"Step {step}| Loss: {loss_accum.item():.6f} | Norm: {norm:.3f} | LR: {lr:.3e} | Throughput: {tokens_per_sec:.2f} tokens/sec")
+            print(f"Step {step}| Loss: {loss_accum:.6f} | Norm: {norm:.3f} | LR: {lr:.3e} | Throughput: {tokens_per_sec:.2f} tokens/sec")
 
         with open("training.log", "a") as f:
-            f.write(f"{step},{loss_accum.item()},{norm},{lr},{tokens_per_sec}\n")
+            # f.write(f"{step},{loss_accum.item()},{norm},{lr},{tokens_per_sec}\n")
 
 
 # ------------------------------------------------------------------------------------------
