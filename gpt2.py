@@ -345,13 +345,13 @@ for step in range(max_steps):
         x, y = train_loader.next_batch()
         x, y = x.to(device), y.to(device)
 
-        # if ddp:
-        #     model.require_backward_grad_sync = (micro_step == grad_acc_steps - 1)
+        if ddp:
+            model.require_backward_grad_sync = (micro_step == grad_acc_steps - 1)
             
-        # with torch.autocast(device_type=device, dtype=torch.float16):
-        #     logits, loss = model(x, y)
-        # loss = loss / grad_acc_steps
-        # loss_accum += loss.detach()
+        with torch.autocast(device_type=device, dtype=torch.float16):
+            logits, loss = model(x, y)
+        loss = loss / grad_acc_steps
+        loss_accum += loss.detach()
 
         # loss.backward()
 
@@ -367,7 +367,7 @@ for step in range(max_steps):
         param_group['lr'] = lr
 
     # Update weights
-    optimizer.step()
+    # optimizer.step()
 
     # Let GPU finish
     if device == "cuda":
