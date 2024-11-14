@@ -236,6 +236,12 @@ class DataLoaderLite:
     def next_batch(self):
         B, T = self.B, self.T
         buf = self.tokens[self.current_position : self.current_position + B * T + 1]
+        
+        # Handling in case of last shard with insufficient tokens
+        # Pad with zeros
+        if len(buf) < B * T + 1:
+            buf = torch.cat((buf, torch.zeros(B * T + 1 - len(buf), dtype=torch.long)))
+            
 
         x = (buf[:-1]).view(B, T)
         y = (buf[1:]).view(B, T)
