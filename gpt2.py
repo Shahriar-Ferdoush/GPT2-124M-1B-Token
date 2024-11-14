@@ -231,17 +231,20 @@ class DataLoaderLite:
 
     def next_batch(self):
         B, T = self.B, self.T
-        buf = self.tokens[self.current_position : self.current_position + B*T + 1]
+        buf = self.tokens[self.current_position : self.current_position + B * T + 1]
 
-        x = buf[:-1].view(B, T)
-        y = buf[1:].view(B, T)
-
-        self.current_position += B * T * self.num_processes
-
-        if self.current_position + B * T * self.num_processes + 1 > len(self.tokens):
+        # Check if we have enough tokens
+        if len(buf) < B * T + 1:
+            # Move to the next shard if insufficient tokens
             self.current_shard = (self.current_shard + 1) % len(self.shards)
             self.tokens = load_tokens(self.shards[self.current_shard])
             self.current_position = B * T * self.process_rank
+            buf = self.tokens[self.current_position : self.current_position + B * T + 1]
+
+        # Perform reshaping
+        x = buf[:-1].view(B, T)
+        y = buf[1:].view(B, T)
+        self.current_position += B * T * self.num_processes
 
         return x, y
 
