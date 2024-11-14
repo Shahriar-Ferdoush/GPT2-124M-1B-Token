@@ -293,7 +293,7 @@ if master_process:
 train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train")
 
 # Gradient Scaler
-scaler = torch.cuda.amp.GradScaler()
+# scaler = torch.cuda.amp.GradScaler()
 
 # Set Torch to lower precision (TF32)
 # torch.set_float32_matmul_precision('high')
@@ -348,10 +348,10 @@ for step in range(max_steps):
         if ddp:
             model.require_backward_grad_sync = (micro_step == grad_acc_steps - 1)
             
-        with torch.autocast(device_type=device, dtype=torch.float16):
-            logits, loss = model(x, y)
-        loss = loss / grad_acc_steps
-        loss_accum += loss.detach()
+        # with torch.autocast(device_type=device, dtype=torch.float16):
+        #     logits, loss = model(x, y)
+        # loss = loss / grad_acc_steps
+        # loss_accum += loss.detach()
 
         # loss.backward()
 
