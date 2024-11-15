@@ -5,6 +5,7 @@ import math, time, inspect
 from dataclasses import dataclass
 
 import torch
+import torch.amp
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -285,7 +286,7 @@ else:
 total_batch_size = 524288
 B = 8
 T = 1024
-assert total_batch_size % (B * T * ddp_world_size) == 0, "Batch size not divisible by B * T * ddp_world_size"
+assert (total_batch_size % (B * T * ddp_world_size) == 0), "Batch size not divisible by B * T * ddp_world_size"
 grad_acc_steps = total_batch_size // (B * T * ddp_world_size)
 
 if master_process:
@@ -297,12 +298,12 @@ if master_process:
 train_loader = DataLoaderLite(B, T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train")
 
 # Gradient Scaler
-# scaler = torch.cuda.amp.GradScaler()
+scaler = torch.amp.GradScaler()
 
 # Set Torch to lower precision (TF32)
 # torch.set_float32_matmul_precision('high')
 
-# Create Mode
+# Create Model
 model = GPT(GPTConfig(vocab_size=50304))
 model.to(device)
 # model = torch.compile(model)
@@ -337,7 +338,7 @@ def get_lr(it):
 # Optimizer
 optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
 
-for step in range(max_steps):
+for step in range(120):
     # Current time
     t0 = time.time()
     optimizer.zero_grad()
@@ -348,28 +349,31 @@ for step in range(max_steps):
         x, y = x.to(device), y.to(device)
 
         if ddp:
-            model.require_backward_grad_sync = (micro_step == grad_acc_steps - 1)
-            
+            model.require_backward_grad_sync = micro_step == grad_acc_steps - 1
+
         with torch.autocast(device_type=device, dtype=torch.float16):
             logits, loss = model(x, y)
-        loss = loss / grad_acc_steps
-        loss_accum += loss.detach()
+            loss = loss / grad_acc_steps
+            loss_accum += loss.detach()
 
-        loss.backward()
+        # Backward pass with scaled gradients
+        scaler.scale(loss).backward()
 
     if ddp:
         dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
 
-    # Gradient clipping
+    # Unscale and clip gradients
+    scaler.unscale_(optimizer)
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
-    # Learning rate for this iteration
+    # Step optimizer using scaled gradients
+    scaler.step(optimizer)
+    scaler.update()
+
+    # Adjust learning rate
     lr = get_lr(step)
     for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
-
-    # Update weights
-    optimizer.step()
+        param_group["lr"] = lr
 
     # Let GPU finish
     if device == "cuda":
@@ -417,7 +421,6 @@ if master_process:
     pretrained_model = GPT(GPTConfig(vocab_size=50304))
     pretrained_model.load_state_dict(torch.load("GPT2-124M-1B-token.pth"), strict=False)
     pretrained_model.to(device)
-
 
     # Generate Text
     num_return_sequences = 5
