@@ -1,7 +1,7 @@
 # --------------------------------------------------------------------------------------------
 # ---------------------------------- GPT-2 Model ---------------------------------------------
 
-import math, time, inspect
+import os, math, time, inspect
 from dataclasses import dataclass
 
 import torch
@@ -258,7 +258,16 @@ from torch.distributed import init_process_group, destroy_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 
-ddp = int(os.environ.get('RANK', -1)) != -1
+# --------------------------------- Training Configuration ---------------------------------
+CHECKPOINT_DIR = "./checkpoints"
+CHECKPOINT_FREQ = 100  # Save checkpoint every 100 steps
+RESUME_TRAINING = True  # Set to True to resume from last checkpoint
+
+# Ensure checkpoint directory exists
+os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+
+# ----------------------------------- Distributed Setup ------------------------------------
+ddp = int(os.environ.get("RANK", -1)) != -1
 if ddp:
     assert torch.cuda.is_available(), "Distributed training requires CUDA"
     init_process_group(backend='nccl')
@@ -282,7 +291,7 @@ else:
         device = "cuda"
     print("Using device:", device)
 
-
+# ----------------------------------- Training Setup ---------------------------------------
 total_batch_size = 524288
 B = 8
 T = 1024
@@ -290,9 +299,8 @@ assert (total_batch_size % (B * T * ddp_world_size) == 0), "Batch size not divis
 grad_acc_steps = total_batch_size // (B * T * ddp_world_size)
 
 if master_process:
-    print("Total Batch Size:", total_batch_size)
-    print("No of Gradient Accumulation Steps:", grad_acc_steps)
-
+    print(f"Total Batch Size: {total_batch_size}")
+    print(f"No of Gradient Accumulation Steps: {grad_acc_steps}")
 
 # Data Loader
 train_loader = DataLoaderLite(B, T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train")
@@ -335,11 +343,31 @@ def get_lr(it):
     return min_lr + coeff * (max_lr - min_lr)
 
 
-# Optimizer
-optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
+optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=max_lr, device=device)
 
-for step in range(120):
-    # Current time
+# ----------------------------------- Checkpointing ---------------------------------------
+start_step = 0
+
+if RESUME_TRAINING:
+    checkpoint_files = [f for f in os.listdir(CHECKPOINT_DIR) if f.endswith(".pt")]
+    if checkpoint_files:
+        latest_checkpoint = max(
+            checkpoint_files, key=lambda x: int(x.split("_")[1].split(".")[0])
+        )
+        checkpoint_path = os.path.join(CHECKPOINT_DIR, latest_checkpoint)
+        print(f"Resuming from checkpoint: {checkpoint_path}")
+
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        scaler.load_state_dict(checkpoint["scaler_state_dict"])
+        start_step = checkpoint["step"] + 1
+
+if master_process:
+    print(f"Starting training from step: {start_step}")
+
+# ----------------------------------- Training Loop ---------------------------------------
+for step in range(start_step, max_steps):
     t0 = time.time()
     optimizer.zero_grad()
 
@@ -394,6 +422,18 @@ for step in range(120):
         with open("training.log", "a") as f:
             f.write(f"{step},{loss_accum.item()},{norm},{lr},{tokens_per_sec}\n")
 
+    # Save checkpoint
+    if step > 0 and step % CHECKPOINT_FREQ == 0:
+        checkpoint_path = os.path.join(CHECKPOINT_DIR, f"checkpoint_{step}.pt")
+        checkpoint = {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scaler_state_dict": scaler.state_dict(),
+            "step": step,
+        }
+        torch.save(checkpoint, checkpoint_path)
+        if master_process:
+            print(f"Checkpoint saved at step {step}")
 
 # ------------------------------------------------------------------------------------------
 # -------------------------- Save and Load GPT-2 Model Weights -----------------------------
