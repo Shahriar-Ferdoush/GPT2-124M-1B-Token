@@ -422,18 +422,29 @@ for step in range(start_step, max_steps):
         with open("training.log", "a") as f:
             f.write(f"{step},{loss_accum.item()},{norm},{lr},{tokens_per_sec}\n")
 
-    # Save checkpoint
+    # Save latest checkpoint
     if step > 0 and step % CHECKPOINT_FREQ == 0:
-        checkpoint_path = os.path.join(CHECKPOINT_DIR, f"checkpoint_{step}.pt")
+        checkpoint_name = f"checkpoint_{step}.pt"
+        checkpoint_path = os.path.join(CHECKPOINT_DIR, checkpoint_name)
         checkpoint = {
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "scaler_state_dict": scaler.state_dict(),
             "step": step,
         }
+
+        # Remove any older checkpoints
+        old_checkpoints = [
+            f
+            for f in os.listdir(CHECKPOINT_DIR)
+            if f.startswith("checkpoint_") and f != checkpoint_name
+        ]
+        for old_checkpoint in old_checkpoints:
+            os.remove(os.path.join(CHECKPOINT_DIR, old_checkpoint))
+
         torch.save(checkpoint, checkpoint_path)
         if master_process:
-            print(f"Checkpoint saved at step {step}")
+            print(f"Checkpoint saved: {checkpoint_name}")
 
 # ------------------------------------------------------------------------------------------
 # -------------------------- Save and Load GPT-2 Model Weights -----------------------------
